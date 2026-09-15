@@ -46,6 +46,74 @@ function fmke_create_wishlist_page() {
 }
 
 /**
+ * Creates the table that backs vendor withdrawal requests. Defined
+ * directly in this always-loaded file (not inside
+ * class-vendor-withdrawals.php) so it's guaranteed available during
+ * register_activation_hook, same reasoning as the commission-setup and
+ * wishlist-page fixes above. dbDelta() is safe to run repeatedly - it
+ * only creates what's missing, so this also doubles as the update path
+ * for sites that already had the plugin active before this table
+ * existed (see FMKE_Vendor_Withdrawals::maybe_create_table()).
+ */
+function fmke_create_withdrawals_table() {
+	global $wpdb;
+
+	$table           = $wpdb->prefix . 'fmke_withdrawals';
+	$charset_collate = $wpdb->get_charset_collate();
+
+	$sql = "CREATE TABLE {$table} (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		vendor_id BIGINT UNSIGNED NOT NULL,
+		amount DECIMAL(19,4) NOT NULL,
+		method VARCHAR(20) NOT NULL,
+		payment_details TEXT NULL,
+		status VARCHAR(20) NOT NULL DEFAULT 'pending',
+		vendor_note TEXT NULL,
+		admin_note TEXT NULL,
+		requested_at DATETIME NOT NULL,
+		processed_at DATETIME NULL,
+		processed_by BIGINT UNSIGNED NULL,
+		PRIMARY KEY  (id),
+		KEY vendor_id (vendor_id),
+		KEY status (status)
+	) {$charset_collate};";
+
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+	dbDelta( $sql );
+}
+
+/**
+ * Creates the table that backs vendor (store-level) reviews. Same
+ * always-loaded reasoning as fmke_create_withdrawals_table() above.
+ */
+function fmke_create_vendor_reviews_table() {
+	global $wpdb;
+
+	$table           = $wpdb->prefix . 'fmke_vendor_reviews';
+	$charset_collate = $wpdb->get_charset_collate();
+
+	$sql = "CREATE TABLE {$table} (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		vendor_id BIGINT UNSIGNED NOT NULL,
+		customer_id BIGINT UNSIGNED NOT NULL,
+		order_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		rating TINYINT UNSIGNED NOT NULL,
+		comment TEXT NULL,
+		vendor_reply TEXT NULL,
+		vendor_replied_at DATETIME NULL,
+		is_hidden TINYINT UNSIGNED NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		PRIMARY KEY  (id),
+		UNIQUE KEY vendor_customer (vendor_id, customer_id),
+		KEY vendor_id (vendor_id)
+	) {$charset_collate};";
+
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+	dbDelta( $sql );
+}
+
+/**
  * Check dependencies before doing anything.
  */
 function fmke_check_dependencies() {
@@ -89,6 +157,8 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-trending-products.php';
 	require_once FMKE_PATH . 'includes/class-site-footer.php';
 	require_once FMKE_PATH . 'includes/class-vendor-earnings.php';
+	require_once FMKE_PATH . 'includes/class-vendor-withdrawals.php';
+	require_once FMKE_PATH . 'includes/class-vendor-reviews.php';
 
 	// Register payment gateways with WooCommerce.
 	add_filter( 'woocommerce_payment_gateways', function ( $gateways ) {
@@ -142,4 +212,10 @@ register_activation_hook( __FILE__, function () {
 
 	// 3. Create the wishlist page so [fmke_wishlist] has somewhere to live.
 	fmke_create_wishlist_page();
+
+	// 4. Create the table that stores vendor withdrawal requests.
+	fmke_create_withdrawals_table();
+
+	// 5. Create the table that stores vendor (store-level) reviews.
+	fmke_create_vendor_reviews_table();
 } );

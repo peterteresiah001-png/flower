@@ -176,12 +176,26 @@ class FMKE_Featured_Vendors {
 	}
 
 	/**
-	 * Reads a seller's average rating + review count from Dokan.
-	 * Returns zeros (rendered as no rating row) if Dokan's rating
-	 * function isn't available or the vendor has no reviews yet.
+	 * Reads a seller's average rating + review count.
+	 *
+	 * Prefers FMKE's own store-level reviews (class-vendor-reviews.php -
+	 * customers rating the buying experience with this specific vendor)
+	 * since that's what the store page itself now shows; falls back to
+	 * Dokan's product-review-based seller rating for vendors who don't
+	 * have any store reviews yet, so a vendor with well-reviewed products
+	 * still shows something here. Returns zeros (rendered as no rating
+	 * row) if neither source has anything.
 	 */
 	private function get_store_rating( $seller_id ) {
 		$rating = array( 'rating' => 0, 'count' => 0 );
+
+		global $fmke_vendor_reviews;
+		if ( isset( $fmke_vendor_reviews ) && $fmke_vendor_reviews instanceof FMKE_Vendor_Reviews ) {
+			$store_reviews = $fmke_vendor_reviews->get_rating_summary( $seller_id );
+			if ( $store_reviews['count'] > 0 ) {
+				return $store_reviews;
+			}
+		}
 
 		if ( function_exists( 'dokan_get_seller_rating' ) ) {
 			$data = dokan_get_seller_rating( $seller_id );

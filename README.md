@@ -32,6 +32,31 @@ uses default WordPress/WooCommerce/Dokan screens.
   orders are excluded. If the page 404s after activation, go to
   **Settings > Permalinks** and click Save once to rebuild the dashboard
   rewrite rules.
+- `includes/class-vendor-withdrawals.php` — a **Withdrawals** page on the
+  Dokan vendor dashboard (`/dashboard/withdrawals/`) so vendors can cash
+  out via M-Pesa or bank transfer. Shows the vendor's available balance
+  (net earnings on *completed* orders, minus anything already requested),
+  a request form, and a history table with status (pending / approved /
+  paid / rejected). Requests are reviewed at **WP Admin > WooCommerce >
+  Withdrawal Requests**, where the admin approves, rejects, or marks a
+  request paid once the M-Pesa/bank transfer has actually been sent -
+  email notifications go out to the admin on a new request and to the
+  vendor on any status change. Minimum withdrawal is KES 500 (change the
+  `MIN_WITHDRAWAL` constant in the class to adjust). Uses its own
+  `{prefix}fmke_withdrawals` table rather than Dokan's built-in withdraw
+  screen, since it needs to store M-Pesa numbers / bank details.
+- `includes/class-vendor-reviews.php` — **store-level vendor reviews**,
+  separate from WooCommerce's per-product reviews. Adds a ratings/reviews
+  block to each vendor's Dokan store page (average rating, review list,
+  and a form) plus a public reply box, restricted to logged-in customers
+  who have a *completed* order with that specific vendor (one review per
+  customer per vendor - submitting again edits their existing review).
+  Vendors read and reply to their reviews from a **Reviews** page on the
+  dashboard (`/dashboard/reviews/`); the admin can hide or delete any
+  review at **WP Admin > WooCommerce > Vendor Reviews**. The homepage's
+  Featured Vendors cards use this same rating once a vendor has store
+  reviews, falling back to Dokan's product-review-based rating until
+  then. Uses its own `{prefix}fmke_vendor_reviews` table.
 - `includes/class-shop-sidebar.php` — left-hand category accordion on the
   shop/category pages.
 - `includes/class-category-shortcuts.php` — a horizontally-scrollable
