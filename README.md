@@ -21,6 +21,14 @@ uses default WordPress/WooCommerce/Dokan screens.
   order to a rider.
 - `includes/class-commission-setup.php` — sets Dokan's global commission
   to Admin 20% / Vendor 80% on activation (editable in Dokan settings).
+- `includes/class-shop-sidebar.php` — left-hand category accordion on the
+  shop/category pages.
+- `includes/class-homepage-banners.php` — three homepage promo banners
+  (Flowers / Gifts / Event Rentals), auto-inserted at the top of the
+  front page on Storefront, or placeable anywhere via the
+  `[fmke_promo_banners]` shortcode. Uses each category's WooCommerce
+  "Thumbnail" image if set (Products > Categories > edit), otherwise a
+  plain colour fallback.
 
 ## 2. Required free plugins (install from WordPress.org before activating this one)
 
