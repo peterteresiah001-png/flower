@@ -159,6 +159,8 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-vendor-earnings.php';
 	require_once FMKE_PATH . 'includes/class-vendor-withdrawals.php';
 	require_once FMKE_PATH . 'includes/class-vendor-reviews.php';
+	require_once FMKE_PATH . 'includes/class-order-notifications.php';
+	require_once FMKE_PATH . 'includes/class-order-status-notifications.php';
 
 	// Register payment gateways with WooCommerce.
 	add_filter( 'woocommerce_payment_gateways', function ( $gateways ) {
