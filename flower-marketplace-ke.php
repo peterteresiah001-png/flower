@@ -85,6 +85,7 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-flash-sales.php';
 	require_once FMKE_PATH . 'includes/class-best-sellers.php';
 	require_once FMKE_PATH . 'includes/class-trending-products.php';
+	require_once FMKE_PATH . 'includes/class-site-footer.php';
 
 	// Register payment gateways with WooCommerce.
 	add_filter( 'woocommerce_payment_gateways', function ( $gateways ) {
