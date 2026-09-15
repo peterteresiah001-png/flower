@@ -82,6 +82,8 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-top-categories.php';
 	require_once FMKE_PATH . 'includes/class-featured-vendors.php';
 	require_once FMKE_PATH . 'includes/class-service-badges.php';
+	require_once FMKE_PATH . 'includes/class-trust-badges.php';
+	require_once FMKE_PATH . 'includes/class-delivery-timeframe.php';
 	require_once FMKE_PATH . 'includes/class-flash-sales.php';
 	require_once FMKE_PATH . 'includes/class-best-sellers.php';
 	require_once FMKE_PATH . 'includes/class-trending-products.php';
