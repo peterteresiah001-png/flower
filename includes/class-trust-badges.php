@@ -15,8 +15,14 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (just under Add to Cart) - since that's where trust badges actually
  * move the needle on conversion.
  *
- * Prints nothing on checkout if no payment gateway is enabled at all,
- * so it never implies you can pay when you can't.
+ * The security row (SSL, secure checkout, buyer protection) is printed
+ * on checkout only, where the reassurance is doing the most work. The
+ * product page gets the payment-method row alone, so the bar stays a
+ * single compact line under Add to Cart.
+ *
+ * Prints nothing at all - on either page - when there is nothing left
+ * to show, so it never implies you can pay when you can't and never
+ * leaves an empty bordered box behind.
  */
 class FMKE_Trust_Badges {
 
@@ -41,7 +47,11 @@ class FMKE_Trust_Badges {
 
 	public function __construct() {
 		add_action( 'woocommerce_before_checkout_form', array( $this, 'render_checkout' ), 5 );
-		add_action( 'woocommerce_single_product_summary', array( $this, 'render_product' ), 35 );
+		// 36, not 35: the wishlist heart also hooks this at 35, and
+		// relying on include order to break the tie makes the layout
+		// depend on the order of the require_once calls in the
+		// bootstrap file. Explicit priority keeps the bar below it.
+		add_action( 'woocommerce_single_product_summary', array( $this, 'render_product' ), 36 );
 		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue' ) );
 	}
 
@@ -61,16 +71,18 @@ class FMKE_Trust_Badges {
 
 	/**
 	 * @param bool $with_security Whether to also print the security row.
-	 *                            Kept true on checkout (where reassurance
-	 *                            matters most) and can be trimmed to
-	 *                            payment-only elsewhere if ever reused.
+	 *                            True on checkout (where the reassurance
+	 *                            matters most), false on the product
+	 *                            page so the bar stays one short line.
 	 */
 	private function render( $with_security = true ) {
 		$payment_badges = $this->get_payment_badges();
 
-		// On checkout specifically, no enabled gateway means nothing
-		// honest to show - don't print an empty/misleading bar.
-		if ( empty( $payment_badges ) && $with_security ) {
+		// No enabled gateway means nothing honest to show, so print
+		// nothing at all: on checkout the bar would imply you can pay
+		// when you can't, and on the product page (security row off)
+		// it would leave an empty bordered box behind.
+		if ( empty( $payment_badges ) ) {
 			return '';
 		}
 

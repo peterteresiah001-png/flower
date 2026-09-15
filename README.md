@@ -21,6 +21,17 @@ uses default WordPress/WooCommerce/Dokan screens.
   order to a rider.
 - `includes/class-commission-setup.php` — sets Dokan's global commission
   to Admin 20% / Vendor 80% on activation (editable in Dokan settings).
+- `includes/class-vendor-earnings.php` — an **Earnings** page on the
+  Dokan vendor dashboard (`/dashboard/earnings/`). Shows gross sales,
+  marketplace commission, net earnings and order count for a selectable
+  period (7 / 30 / 90 days or all time), plus a per-order table showing
+  how each order was split. Figures are read from Dokan's own
+  `dokan_orders` table — the commission is taken per order rather than
+  recalculated at 20%, so historical orders and any vendor on a custom
+  split still read correctly. Cancelled, refunded, failed and pending
+  orders are excluded. If the page 404s after activation, go to
+  **Settings > Permalinks** and click Save once to rebuild the dashboard
+  rewrite rules.
 - `includes/class-shop-sidebar.php` — left-hand category accordion on the
   shop/category pages.
 - `includes/class-category-shortcuts.php` — a horizontally-scrollable
@@ -101,6 +112,10 @@ Vendors keep 80% of each sale; the marketplace keeps 20%. This is
 Dokan's native commission engine — no extra code needed beyond the
 default set on activation. To change the split later, go to
 **Dokan > Settings > Selling Options > Commission**.
+
+Each vendor can see their own side of this at **Vendor Dashboard >
+Earnings**: gross sales, what the marketplace kept, and what's payable
+to them, per period and per order.
 
 ## 6. Manual WhatsApp dispatch
 

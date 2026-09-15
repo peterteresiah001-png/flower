@@ -52,8 +52,20 @@ class FMKE_Wishlist {
 		$is_saved = in_array( $product->get_id(), $this->get_ids(), true );
 		$class    = $is_saved ? 'fmke-wishlist-btn is-saved' : 'fmke-wishlist-btn';
 
-		echo '<button type="button" class="' . esc_attr( $class ) . '" data-product-id="' . esc_attr( $product->get_id() ) . '" aria-label="Save to wishlist">';
+		// On the single product page the button sits on its own line
+		// under Add to Cart, where a bare heart reads as a stray glyph -
+		// so it gets a text label there. In the shop grid it stays a
+		// compact icon so the product cards keep their alignment.
+		$with_label = is_product();
+		if ( $with_label ) {
+			$class .= ' fmke-wishlist-btn-labelled';
+		}
+
+		echo '<button type="button" class="' . esc_attr( $class ) . '" data-product-id="' . esc_attr( $product->get_id() ) . '" aria-pressed="' . ( $is_saved ? 'true' : 'false' ) . '" aria-label="' . esc_attr( $is_saved ? 'Remove from wishlist' : 'Save to wishlist' ) . '">';
 		echo '<span aria-hidden="true">&#9825;</span>';
+		if ( $with_label ) {
+			echo '<span class="fmke-wishlist-btn-label">' . esc_html( $is_saved ? 'Saved to wishlist' : 'Save to wishlist' ) . '</span>';
+		}
 		echo '</button>';
 	}
 
@@ -116,8 +128,23 @@ class FMKE_Wishlist {
 	}
 
 	public function enqueue() {
-		wp_add_inline_script( 'jquery', $this->get_inline_js(), 'after' );
+		// The stylesheet stays global: the header heart + counter render
+		// on every page via storefront_header. The JS only matters where
+		// a toggle button can actually appear.
 		wp_add_inline_style( 'wp-block-library', $this->get_inline_css() );
+
+		$wishlist_page_id = (int) get_option( 'fmke_wishlist_page_id' );
+		$needs_js         = is_product()
+			|| is_shop()
+			|| is_product_category()
+			|| is_product_tag()
+			|| ( $wishlist_page_id && is_page( $wishlist_page_id ) );
+
+		if ( ! $needs_js ) {
+			return;
+		}
+
+		wp_add_inline_script( 'jquery', $this->get_inline_js(), 'after' );
 	}
 
 	private function get_inline_js() {
@@ -145,6 +172,9 @@ jQuery(function ($) {
 				\$btn.closest('.fmke-wishlist-item').fadeOut(200, function () { $(this).remove(); });
 			} else {
 				\$btn.toggleClass('is-saved', res.data.saved);
+				\$btn.attr('aria-pressed', res.data.saved ? 'true' : 'false');
+				\$btn.attr('aria-label', res.data.saved ? 'Remove from wishlist' : 'Save to wishlist');
+				\$btn.find('.fmke-wishlist-btn-label').text(res.data.saved ? 'Saved to wishlist' : 'Save to wishlist');
 			}
 		});
 	});
@@ -190,6 +220,17 @@ JS;
 	align-items: center;
 	justify-content: center;
 	transition: background 0.15s ease;
+}
+.fmke-wishlist-btn-labelled {
+	width: auto;
+	height: auto;
+	gap: 8px;
+	padding: 9px 16px;
+	border-radius: 999px;
+	font-size: 14px;
+	font-weight: 600;
+	font-family: 'General Sans', sans-serif;
+	margin: 12px 0 18px;
 }
 .fmke-wishlist-btn.is-saved {
 	background: #7A2048;
