@@ -23,12 +23,29 @@ uses default WordPress/WooCommerce/Dokan screens.
   to Admin 20% / Vendor 80% on activation (editable in Dokan settings).
 - `includes/class-shop-sidebar.php` — left-hand category accordion on the
   shop/category pages.
+- `includes/class-category-shortcuts.php` — a horizontally-scrollable
+  row of small "shortcut" cards (icon/image + name) at the top of the
+  shop and category pages, above the sort/result bar. Shows an "All"
+  card plus the current category's siblings (or the top-level
+  categories on the main shop page), with the active one highlighted -
+  a fast way to jump between categories without using the sidebar,
+  especially on mobile.
 - `includes/class-homepage-banners.php` — three homepage promo banners
   (Flowers / Gifts / Event Rentals), auto-inserted at the top of the
   front page on Storefront, or placeable anywhere via the
   `[fmke_promo_banners]` shortcode. Uses each category's WooCommerce
   "Thumbnail" image if set (Products > Categories > edit), otherwise a
   plain colour fallback.
+- `includes/class-top-categories.php` — a "Top Categories" grid of
+  circular tiles (image, name, product count), ordered by how many
+  products are in each category. Auto-inserted on the front page just
+  below the promo banners, or placeable anywhere via the
+  `[fmke_top_categories count="8"]` shortcode. Unlike the fixed
+  Flowers/Gifts/Event Rentals banners, this grid is data-driven, so it
+  automatically picks up any subcategories a vendor adds later (e.g.
+  "Roses", "Birthday Gifts"). The automatic homepage placement leaves
+  out the three banner categories to avoid repeating them right below
+  the banners; the shortcode shows all categories.
 
 ## 2. Required free plugins (install from WordPress.org before activating this one)
 

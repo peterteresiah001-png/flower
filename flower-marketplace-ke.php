@@ -77,7 +77,9 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-wishlist.php';
 	require_once FMKE_PATH . 'includes/class-cart-counter.php';
 	require_once FMKE_PATH . 'includes/class-shop-sidebar.php';
+	require_once FMKE_PATH . 'includes/class-category-shortcuts.php';
 	require_once FMKE_PATH . 'includes/class-homepage-banners.php';
+	require_once FMKE_PATH . 'includes/class-top-categories.php';
 	require_once FMKE_PATH . 'includes/class-service-badges.php';
 	require_once FMKE_PATH . 'includes/class-flash-sales.php';
 
