@@ -32,7 +32,7 @@ uses default WordPress/WooCommerce/Dokan screens.
       a "Check M-Pesa payment status now" action on the order edit
       screen (WooCommerce > Orders > [order] > Order actions), for when
       you don't want to wait for the next cron run.
-- `includes/class-wc-gateway-hosted-checkout.php` — IntaSend/Pesapal
+- `includes/class-wc-gateway-hosted-checkout.php` — IntaSend/Pesapal card, bank and mobile-money
   hosted checkout gateway, same two modes.
 - `includes/class-whatsapp-dispatch.php` — adds a "Dispatch via WhatsApp"
   box to each order (WP Admin and the Dokan vendor dashboard) that opens
@@ -103,6 +103,16 @@ uses default WordPress/WooCommerce/Dokan screens.
   `[fmke_promo_banners]` shortcode. Uses each category's WooCommerce
   "Thumbnail" image if set (Products > Categories > edit), otherwise a
   plain colour fallback.
+- `includes/class-order-notifications.php` — email sent at checkout: one
+  summary to the admin with a per-vendor breakdown, and a separate email
+  to each vendor with just their sub-order.
+- `includes/class-order-status-notifications.php` — email sent on every
+  order status change, to whichever of customer/vendor/admin the status
+  actually concerns. The customer emails on this class can overlap with
+  WooCommerce's own built-in customer emails; toggle each one off at
+  **WooCommerce > Order Email Notifications** if you don't want both.
+- `includes/class-sms-notifications.php` — SMS via Africa's Talking,
+  sent the moment an order is confirmed paid (see Section 7).
 - `includes/class-top-categories.php` — a "Top Categories" grid of
   circular tiles (image, name, product count), ordered by how many
   products are in each category. Auto-inserted on the front page just
@@ -155,12 +165,39 @@ Optional but recommended free plugins:
   triggers a real STK push on a Safaricom test phone number and a real
   callback to your site.
 
-### IntaSend / Pesapal (card/bank)
+### IntaSend / Pesapal (Visa, Mastercard, bank, mobile money)
 - **Demo Mode**: customer is redirected to a plain local page with
   "Simulate Successful Payment" / "Simulate Failed Payment" buttons —
   useful for testing the checkout flow before you have API keys.
 - **Sandbox**: get free test keys from intasend.com or
   developer.pesapal.com and switch the gateway to "Provider Sandbox."
+- **Production**: same screen, set Mode to "Provider Production" and
+  paste your live keys. Both providers are fully implemented — going
+  live is a dropdown change, not a code change.
+
+#### Pesapal specifics (API 3.0)
+- Put your **consumer_key** in "Publishable Key / Pesapal Consumer Key"
+  and your **consumer_secret** in "Secret Key / Pesapal Consumer Secret".
+- The IPN URL is registered with Pesapal **automatically** on the first
+  payment and cached, so there's nothing to paste into their dashboard.
+  It is:
+  `https://yourdomain.com/wc-api/wc_gateway_hosted_checkout/?fmke_pesapal_ipn=1`
+  Tick **"Re-register my Pesapal IPN URL on the next payment"** in the
+  gateway settings after changing your domain or credentials.
+- The order is only marked paid after a server-side
+  `GetTransactionStatus` call, and only if the amount Pesapal reports
+  matches the order total (a mismatch goes `on-hold` for a human).
+  Query params on the browser return are never trusted on their own.
+- Card test numbers for the sandbox come from your Pesapal developer
+  account — Pesapal rotates these, so use the ones on
+  developer.pesapal.com rather than any hard-coded list.
+- If an IPN never arrives (some hosts block outbound callbacks), open
+  the order in WP Admin and run **Order actions > "Check card/bank
+  payment status now"** to re-poll Pesapal for that one order.
+- **Refunds**: for Pesapal orders, WooCommerce's normal Refund button
+  submits a Pesapal `RefundRequest` using the stored confirmation code.
+  Pesapal still requires you to approve it in their dashboard. IntaSend
+  refunds are done in the IntaSend dashboard.
 
 ## 5. Vendor commission (80/20)
 
@@ -185,16 +222,68 @@ order details page), you'll see a **Dispatch via WhatsApp** box:
 3. Send it manually to the rider. No automation, no third-party API —
    exactly the manual dispatch flow requested.
 
-## 7. MVP scope & known limitations
+## 7. Notifications (email + SMS)
 
-- Pesapal sandbox integration is stubbed with the redirect/webhook
-  structure in place — you'll need to add the token + SubmitOrderRequest
-  calls per developer.pesapal.com once you have credentials (IntaSend is
-  fully wired since it only needs a single checkout call).
+**Email** works out of the box via `wp_mail()` — no setup needed to start
+testing. Two things to know before relying on it in production:
+
+- WordPress's default mail transport (`mail()`) sends from
+  `wordpress@yourdomain` with no SPF/DKIM, which many inboxes (Gmail,
+  Outlook) spam-folder or drop outright. Install an SMTP plugin (e.g.
+  WP Mail SMTP) pointed at a real sending service (Postmark, SES,
+  Brevo, Gmail SMTP) before go-live — this plugin can't fix
+  deliverability from PHP's `mail()` alone.
+- The plugin's own customer status emails
+  (`class-order-status-notifications.php`) overlap with WooCommerce's
+  built-in customer emails for **on-hold, processing, completed and
+  refunded**. Both are on by default. Go to **WooCommerce > Order Email
+  Notifications** to turn off either side per status if you don't want
+  a customer getting two emails for the same update.
+
+**SMS** is via [Africa's Talking](https://africastalking.com) — the best
+fit for Kenya on cost (~KES 0.80/SMS live) and reach (all three networks,
+free sandbox). Configure at **WooCommerce > SMS Notifications**:
+
+1. Sign up at africastalking.com and grab your API key. Use username
+   `sandbox` to test for free before your account is fully set up.
+2. Set Mode to **Demo** first — no API calls, no cost, the message that
+   would have been sent is logged as an order note so you can confirm
+   the trigger fires at the right moment.
+3. Move to **Sandbox** to confirm the real API call works end-to-end
+   (messages don't reach a real handset in sandbox).
+4. Before **Live**, register an alphanumeric Sender ID (max 11
+   characters) in the Africa's Talking dashboard — Safaricom, Airtel and
+   Telkom all silently drop or reroute SMS from an unregistered ID.
+   Registration takes 2–5 business days, so start it early.
+
+Two events are wired up, both firing the moment an order is confirmed
+paid (not when it's first placed — M-Pesa STK and card/bank payments
+both confirm asynchronously after the order exists):
+
+- **Customer**: "your order is confirmed" text with the total and a
+  tracking link.
+- **Vendor**: "new paid order" text with item count, total and customer
+  contact — the moment a vendor should start preparing it. Reads the
+  vendor's phone from their Dokan store profile.
+
+Both toggle independently on the settings page. Vendor SMS is skipped if
+the vendor hasn't set a phone number on their Dokan store profile;
+customer SMS is skipped if the billing phone doesn't look like a valid
+number once normalised to `+254...`.
+
+## 8. MVP scope & known limitations
+
+- Card/debit payments are live-ready on **both** providers: IntaSend
+  (single checkout call) and Pesapal API 3.0 (token → IPN registration →
+  SubmitOrderRequest → callback + IPN → GetTransactionStatus). Neither is
+  stubbed any more; only Demo Mode is simulated.
+- Pesapal's IPN needs your site to be publicly reachable over HTTPS, so
+  card payments can't be fully tested from localhost — use a staging
+  domain or a tunnel.
 - No custom CSS/theme — uses default WordPress/WooCommerce/Dokan
   screens and styling.
 - Delivery/dispatch is manual by design (WhatsApp), not automated
   logistics.
 - Recommended next steps post-MVP: vendor payout reconciliation reports,
-  automated rider assignment, SMS notifications, review/rating system
-  (Dokan Lite → Dokan Pro has some of this built in).
+  automated rider assignment, review/rating system (Dokan Lite → Dokan
+  Pro has some of this built in).

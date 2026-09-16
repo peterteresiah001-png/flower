@@ -39,6 +39,33 @@ class FMKE_Order_Status_Notifications {
 	/** Statuses (without the wc- prefix) worth telling the customer about. */
 	const CUSTOMER_STATUSES = array( 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed' );
 
+	/**
+	 * Statuses where WooCommerce core ALSO emails the customer by default
+	 * (WooCommerce > Settings > Emails), so leaving them on here sends a
+	 * duplicate. Flagged only for the settings-page copy - the toggle
+	 * itself is a plain per-status option, defaulting to "on" so behaviour
+	 * is unchanged unless the admin turns one off.
+	 */
+	const OVERLAPS_CORE_EMAIL = array( 'on-hold', 'processing', 'completed', 'refunded' );
+
+	/**
+	 * @return string[] Customer statuses currently enabled, reading the
+	 *                   per-status settings option. Defaults every status
+	 *                   to "on" so existing installs keep today's
+	 *                   behaviour until an admin visits the settings page.
+	 */
+	private function enabled_customer_statuses() {
+		$saved = get_option( 'fmke_email_customer_statuses', array() );
+		$enabled = array();
+		foreach ( self::CUSTOMER_STATUSES as $status ) {
+			$is_on = isset( $saved[ $status ] ) ? ( 'yes' === $saved[ $status ] ) : true;
+			if ( $is_on ) {
+				$enabled[] = $status;
+			}
+		}
+		return $enabled;
+	}
+
 	/** Statuses worth telling the vendor about. */
 	const VENDOR_STATUSES = array( 'processing', 'completed', 'cancelled', 'refunded', 'failed' );
 
@@ -64,6 +91,70 @@ class FMKE_Order_Status_Notifications {
 
 	public function __construct() {
 		add_action( 'woocommerce_order_status_changed', array( $this, 'handle' ), 10, 4 );
+		add_action( 'admin_menu', array( $this, 'add_settings_page' ) );
+		add_action( 'admin_init', array( $this, 'register_settings' ) );
+	}
+
+	/* -----------------------------------------------------------------
+	 * Settings: per-status toggle for the customer emails this class
+	 * sends, so an admin who's already using WooCommerce's own customer
+	 * emails for a status can turn this plugin's duplicate off instead of
+	 * getting two emails per update.
+	 * ------------------------------------------------------------- */
+
+	public function add_settings_page() {
+		add_submenu_page(
+			'woocommerce',
+			'Order Email Notifications',
+			'Order Email Notifications',
+			'manage_woocommerce',
+			'fmke-email-notifications',
+			array( $this, 'render_settings_page' )
+		);
+	}
+
+	public function register_settings() {
+		register_setting( 'fmke_email_settings', 'fmke_email_customer_statuses', array( $this, 'sanitize_customer_statuses' ) );
+	}
+
+	public function sanitize_customer_statuses( $input ) {
+		$clean = array();
+		foreach ( self::CUSTOMER_STATUSES as $status ) {
+			$clean[ $status ] = ( isset( $input[ $status ] ) && 'yes' === $input[ $status ] ) ? 'yes' : 'no';
+		}
+		return $clean;
+	}
+
+	public function render_settings_page() {
+		$saved = get_option( 'fmke_email_customer_statuses', array() );
+		?>
+		<div class="wrap">
+			<h1>Order Email Notifications</h1>
+			<p>Controls the plugin's own plain-text customer emails on order status changes (separate from
+				WooCommerce's built-in emails under WooCommerce &gt; Settings &gt; Emails, and separate from
+				vendor/admin emails, which aren't affected by this page).</p>
+			<form method="post" action="options.php">
+				<?php settings_fields( 'fmke_email_settings' ); ?>
+				<table class="form-table">
+					<?php foreach ( self::CUSTOMER_STATUSES as $status ) :
+						$is_on = isset( $saved[ $status ] ) ? ( 'yes' === $saved[ $status ] ) : true;
+						$overlaps = in_array( $status, self::OVERLAPS_CORE_EMAIL, true );
+						?>
+						<tr>
+							<th><label><?php echo esc_html( wc_get_order_status_name( 'wc-' . $status ) ); ?></label></th>
+							<td>
+								<input type="checkbox" name="fmke_email_customer_statuses[<?php echo esc_attr( $status ); ?>]" value="yes" <?php checked( $is_on ); ?> />
+								<?php if ( $overlaps ) : ?>
+									<span class="description" style="color:#996800;"> WooCommerce core also emails the customer for this status by default - leaving both on sends two emails.</span>
+								<?php endif; ?>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				</table>
+				<?php submit_button(); ?>
+			</form>
+		</div>
+		<?php
 	}
 
 	public function handle( $order_id, $old_status, $new_status, $order = null ) {
@@ -146,6 +237,9 @@ class FMKE_Order_Status_Notifications {
 
 	private function maybe_notify_customer( $order, $new_status, $seller_id ) {
 		if ( ! isset( self::CUSTOMER_PHRASES[ $new_status ] ) ) {
+			return;
+		}
+		if ( ! in_array( $new_status, $this->enabled_customer_statuses(), true ) ) {
 			return;
 		}
 

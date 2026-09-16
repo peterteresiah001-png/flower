@@ -177,6 +177,7 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-vendor-reviews.php';
 	require_once FMKE_PATH . 'includes/class-order-notifications.php';
 	require_once FMKE_PATH . 'includes/class-order-status-notifications.php';
+	require_once FMKE_PATH . 'includes/class-sms-notifications.php';
 
 	// Register payment gateways with WooCommerce.
 	add_filter( 'woocommerce_payment_gateways', function ( $gateways ) {
@@ -216,6 +217,12 @@ function fmke_bootstrap() {
 	// Manual "check now" action for a single stuck order, from WP Admin > Orders > [order] > Order actions.
 	add_filter( 'woocommerce_order_actions', 'fmke_add_mpesa_check_status_action' );
 	add_action( 'woocommerce_order_action_fmke_check_mpesa_status', 'fmke_handle_mpesa_check_status_action' );
+
+	// Same idea for card/bank orders: if Pesapal's IPN never arrived (host
+	// blocked it, transient outage), staff can re-poll GetTransactionStatus
+	// for one order instead of guessing from the Pesapal dashboard.
+	add_filter( 'woocommerce_order_actions', 'fmke_add_hosted_checkout_status_action' );
+	add_action( 'woocommerce_order_action_fmke_check_hosted_checkout_status', 'fmke_handle_hosted_checkout_status_action' );
 
 	// Manual M-Pesa Paybill fallback: customer's post-checkout code-submission
 	// form, and the admin/vendor "I've verified this on the statement" action.
@@ -311,6 +318,31 @@ function fmke_handle_mpesa_check_status_action( $order ) {
 		return;
 	}
 	$gateway = new WC_Gateway_Mpesa_STK();
+	$gateway->query_and_apply_status( $order );
+}
+
+/**
+ * Adds "Check card/bank payment status now" to the Order actions dropdown
+ * for unpaid hosted-checkout (IntaSend/Pesapal) orders. Only meaningful for
+ * Pesapal, which exposes a GetTransactionStatus endpoint - the gateway
+ * leaves an order note explaining itself if the provider is IntaSend.
+ */
+function fmke_add_hosted_checkout_status_action( $actions ) {
+	global $theorder;
+	if ( $theorder
+		&& 'fmke_hosted_checkout' === $theorder->get_payment_method()
+		&& $theorder->has_status( array( 'pending', 'on-hold', 'failed' ) )
+	) {
+		$actions['fmke_check_hosted_checkout_status'] = 'Check card/bank payment status now';
+	}
+	return $actions;
+}
+
+function fmke_handle_hosted_checkout_status_action( $order ) {
+	if ( ! class_exists( 'WC_Gateway_Hosted_Checkout' ) ) {
+		return;
+	}
+	$gateway = new WC_Gateway_Hosted_Checkout();
 	$gateway->query_and_apply_status( $order );
 }
 
