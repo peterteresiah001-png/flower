@@ -314,10 +314,41 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 	}
 
 	private function process_daraja_payment( $order, $phone ) {
+		$sent = $this->send_stk_request( $order, $phone );
+
+		if ( ! $sent['success'] ) {
+			wc_add_notice( $sent['message'], 'error' );
+			return array( 'result' => 'fail' );
+		}
+
+		$order->save();
+		WC()->cart->empty_cart();
+
+		return array(
+			'result'   => 'success',
+			'redirect' => $this->get_return_url( $order ),
+		);
+	}
+
+	/**
+	 * The actual Daraja STK Push API call, shared by two callers:
+	 *
+	 * - process_daraja_payment() above, at normal checkout time.
+	 * - trigger_stk_for_order(), used by the Pay-on-Delivery gateway (see
+	 *   class-wc-gateway-pay-on-delivery.php) to fire a push at the point
+	 *   of delivery instead of at checkout - same Daraja app, same
+	 *   callback/idempotency/reconciliation handling below, just called at
+	 *   a different moment. This is the one place that actually talks to
+	 *   Daraja, so both callers stay covered by the same safety net.
+	 *
+	 * Does NOT touch order status itself beyond recording the
+	 * CheckoutRequestID - callers decide what status/notes make sense for
+	 * their own flow.
+	 */
+	private function send_stk_request( $order, $phone ) {
 		$token = $this->get_access_token();
 		if ( ! $token ) {
-			wc_add_notice( 'Could not connect to M-Pesa. Check your API credentials.', 'error' );
-			return array( 'result' => 'fail' );
+			return array( 'success' => false, 'message' => 'Could not connect to M-Pesa. Check your API credentials.' );
 		}
 
 		$timestamp = date( 'YmdHis' );
@@ -347,8 +378,7 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 		) );
 
 		if ( is_wp_error( $response ) ) {
-			wc_add_notice( 'M-Pesa request failed: ' . $response->get_error_message(), 'error' );
-			return array( 'result' => 'fail' );
+			return array( 'success' => false, 'message' => 'M-Pesa request failed: ' . $response->get_error_message() );
 		}
 
 		$result = json_decode( wp_remote_retrieve_body( $response ), true );
@@ -357,17 +387,41 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 			$env_label = ( 'live' === $this->environment ) ? 'live Daraja' : 'Daraja sandbox';
 			$order->update_meta_data( '_fmke_checkout_request_id', $result['CheckoutRequestID'] );
 			$order->update_status( 'on-hold', "STK Push sent to customer phone ({$env_label}). Waiting for callback." );
-			$order->save();
-			WC()->cart->empty_cart();
-
-			return array(
-				'result'   => 'success',
-				'redirect' => $this->get_return_url( $order ),
-			);
+			return array( 'success' => true, 'message' => "STK Push sent ({$env_label})." );
 		}
 
-		wc_add_notice( 'M-Pesa did not accept the request: ' . ( $result['errorMessage'] ?? 'Unknown error' ), 'error' );
-		return array( 'result' => 'fail' );
+		return array( 'success' => false, 'message' => 'M-Pesa did not accept the request: ' . ( $result['errorMessage'] ?? 'Unknown error' ) );
+	}
+
+	/**
+	 * Delivery-time trigger for the Pay-on-Delivery gateway: fires an STK
+	 * push against an order that's already on-hold (no order in Daraja's
+	 * demo mode - there's no real/simulated phone screen to show an admin
+	 * from wp-admin, so demo just leaves a note instead of pretending).
+	 * Uses the order's billing phone; returns a human-readable message for
+	 * whatever UI called this to display.
+	 */
+	public function trigger_stk_for_order( $order ) {
+		if ( 'demo' === $this->environment ) {
+			$order->add_order_note( 'Pay on Delivery: STK Push was requested, but M-Pesa STK Push is in Demo Mode (no real credentials configured) - there is no real phone to push to. Use "Confirm manual M-Pesa payment" once the rider has actually collected payment.' );
+			return array( 'success' => false, 'message' => 'STK gateway is in Demo Mode, so no real push can be sent. Order note added.' );
+		}
+
+		$phone = $order->get_billing_phone();
+		if ( ! $phone ) {
+			return array( 'success' => false, 'message' => 'This order has no phone number on file to push to.' );
+		}
+
+		$sent = $this->send_stk_request( $order, $phone );
+		$order->save();
+
+		if ( $sent['success'] ) {
+			$order->add_order_note( 'Pay on Delivery: ' . $sent['message'] . ' (triggered at delivery by staff, phone: ' . $phone . ').' );
+		} else {
+			$order->add_order_note( 'Pay on Delivery: STK Push trigger failed - ' . $sent['message'] );
+		}
+
+		return $sent;
 	}
 
 	/**

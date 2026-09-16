@@ -153,6 +153,8 @@ function fmke_bootstrap() {
 
 	require_once FMKE_PATH . 'includes/class-wc-gateway-mpesa-stk.php';
 	require_once FMKE_PATH . 'includes/class-wc-gateway-hosted-checkout.php';
+	require_once FMKE_PATH . 'includes/class-wc-gateway-mpesa-manual.php';
+	require_once FMKE_PATH . 'includes/class-wc-gateway-pay-on-delivery.php';
 	require_once FMKE_PATH . 'includes/class-whatsapp-dispatch.php';
 	require_once FMKE_PATH . 'includes/class-live-search.php';
 	require_once FMKE_PATH . 'includes/class-account-dropdown.php';
@@ -180,8 +182,14 @@ function fmke_bootstrap() {
 	add_filter( 'woocommerce_payment_gateways', function ( $gateways ) {
 		$gateways[] = 'WC_Gateway_Mpesa_STK';
 		$gateways[] = 'WC_Gateway_Hosted_Checkout';
+		$gateways[] = 'WC_Gateway_Mpesa_Manual';
+		$gateways[] = 'WC_Gateway_Pay_On_Delivery';
 		return $gateways;
 	} );
+
+	// Per-vendor/per-city "Pay on Delivery" settings (Dokan dashboard page
+	// + wp-admin user-profile fallback). See class-wc-gateway-pay-on-delivery.php.
+	new FMKE_POD_Vendor_Settings();
 
 	// Registered here (not inside the gateway class constructor) because
 	// WooCommerce only instantiates gateway objects lazily when a checkout
@@ -208,6 +216,67 @@ function fmke_bootstrap() {
 	// Manual "check now" action for a single stuck order, from WP Admin > Orders > [order] > Order actions.
 	add_filter( 'woocommerce_order_actions', 'fmke_add_mpesa_check_status_action' );
 	add_action( 'woocommerce_order_action_fmke_check_mpesa_status', 'fmke_handle_mpesa_check_status_action' );
+
+	// Manual M-Pesa Paybill fallback: customer's post-checkout code-submission
+	// form, and the admin/vendor "I've verified this on the statement" action.
+	// Registered here, not in the gateway constructor, for the same
+	// lazy-instantiation reason as the demo-STK/M-Pesa hooks above.
+	add_action( 'admin_post_fmke_submit_manual_mpesa_code', array( 'WC_Gateway_Mpesa_Manual', 'handle_code_submission' ) );
+	add_action( 'admin_post_nopriv_fmke_submit_manual_mpesa_code', array( 'WC_Gateway_Mpesa_Manual', 'handle_code_submission' ) );
+
+	add_filter( 'woocommerce_order_actions', 'fmke_add_manual_mpesa_confirm_action' );
+	add_action( 'woocommerce_order_action_fmke_confirm_manual_mpesa', 'fmke_handle_manual_mpesa_confirm_action' );
+
+	// Show the customer's submitted M-Pesa code next to the billing details
+	// on the order edit screen, so staff don't have to dig through notes.
+	add_action( 'woocommerce_admin_order_data_after_billing_address', array( 'WC_Gateway_Mpesa_Manual', 'render_admin_order_meta' ) );
+
+	// Admin page listing Paybill payments Daraja confirmed automatically but
+	// couldn't match to an order (typo'd account number, underpayment, etc.)
+	// - see WC_Gateway_Mpesa_Manual::log_unmatched_payment().
+	add_action( 'admin_menu', function () {
+		add_submenu_page(
+			'woocommerce',
+			'M-Pesa Unmatched Payments',
+			'M-Pesa Unmatched Payments',
+			'manage_woocommerce',
+			'fmke-mpesa-unmatched',
+			array( 'WC_Gateway_Mpesa_Manual', 'render_unmatched_payments_page' )
+		);
+	} );
+}
+
+/**
+ * Adds "Confirm manual M-Pesa payment" to the Order actions dropdown, only
+ * for manual-Paybill orders still on-hold - lets staff confirm the moment
+ * they've checked the real M-Pesa statement, without waiting on any
+ * automated process (there isn't one for this gateway).
+ */
+function fmke_add_manual_mpesa_confirm_action( $actions ) {
+	global $theorder;
+	if ( ! $theorder || ! $theorder->has_status( 'on-hold' ) ) {
+		return $actions;
+	}
+
+	$is_manual_gateway = 'mpesa_manual' === $theorder->get_payment_method();
+	// Pay on Delivery orders where the customer picked Paybill also confirm
+	// through this same action - same underlying logic, see
+	// WC_Gateway_Mpesa_Manual::confirm_manual_payment(), which doesn't care
+	// which gateway actually created the order.
+	$is_pod_paybill = 'fmke_pay_on_delivery' === $theorder->get_payment_method()
+		&& 'paybill' === $theorder->get_meta( '_fmke_pod_collection_method' );
+
+	if ( $is_manual_gateway || $is_pod_paybill ) {
+		$actions['fmke_confirm_manual_mpesa'] = 'Confirm manual M-Pesa payment';
+	}
+	return $actions;
+}
+
+function fmke_handle_manual_mpesa_confirm_action( $order ) {
+	if ( ! class_exists( 'WC_Gateway_Mpesa_Manual' ) ) {
+		return;
+	}
+	WC_Gateway_Mpesa_Manual::confirm_manual_payment( $order );
 }
 
 /**
