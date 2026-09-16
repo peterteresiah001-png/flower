@@ -113,6 +113,17 @@ uses default WordPress/WooCommerce/Dokan screens.
   **WooCommerce > Order Email Notifications** if you don't want both.
 - `includes/class-sms-notifications.php` — SMS via Africa's Talking,
   sent the moment an order is confirmed paid (see Section 7).
+- `includes/class-store-pickup.php` — the two fulfilment options at
+  checkout: **Delivery** (flat KES 350) and **Store Pickup** (free, the
+  customer collects from the selling vendor's own shop). Both are real
+  WooCommerce shipping methods, so cart totals, the order's shipping
+  line and the "does this order need a delivery address" logic all
+  behave correctly without special-casing. Pickup is vendor-scoped:
+  the address shown is the one that vendor saved on their own dashboard
+  (**Dokan Dashboard > Store Pickup**), and the option only appears when
+  the whole order comes from that single vendor — a cart mixing three
+  shops would otherwise mean three collection points for one order. See
+  Section 9.
 - `includes/class-top-categories.php` — a "Top Categories" grid of
   circular tiles (image, name, product count), ordered by how many
   products are in each category. Auto-inserted on the front page just
@@ -222,6 +233,10 @@ order details page), you'll see a **Dispatch via WhatsApp** box:
 3. Send it manually to the rider. No automation, no third-party API —
    exactly the manual dispatch flow requested.
 
+On **Store Pickup** orders this box is replaced by a short "customer is
+collecting, nothing to dispatch" note, so a bouquet can't accidentally be
+sent out to a customer who is already on their way to the shop for it.
+
 ## 7. Notifications (email + SMS)
 
 **Email** works out of the box via `wp_mail()` — no setup needed to start
@@ -287,3 +302,90 @@ number once normalised to `+254...`.
 - Recommended next steps post-MVP: vendor payout reconciliation reports,
   automated rider assignment, review/rating system (Dokan Lite → Dokan
   Pro has some of this built in).
+
+## 9. Delivery vs Store Pickup
+
+Two fulfilment options at checkout:
+
+- **Delivery** — a flat **KES 350** charge for the whole order, however
+  many items or vendors are in the cart.
+- **Store Pickup** — free. The customer collects from the selling
+  vendor's physical store address.
+
+### Setup (one-off, admin)
+
+Both options are added to your shipping zones automatically the first
+time you load wp-admin after activating. To check or change them, go to
+**WooCommerce > Settings > Shipping**, open a zone, and you'll see
+*Delivery (flat rate)* and *Store Pickup (from vendor)* listed.
+
+Click **Edit** on *Delivery (flat rate)* to change:
+
+- the **charge** (default `350`),
+- the **label** customers see (default "Delivery"),
+- an optional **free delivery over** threshold — leave blank to always
+  charge.
+
+Nothing is ever removed automatically, so if you deliberately delete one
+of the methods from a zone it stays deleted.
+
+### Setup (per vendor)
+
+Store Pickup stays hidden until the vendor turns it on. Each vendor goes
+to **Dokan Dashboard > Store Pickup** and fills in:
+
+- **Offer Store Pickup on my products** — the on/off switch.
+- **Collection address** — written the way they'd give directions on the
+  phone: building, floor, shop number, street, area. The form pre-shows
+  their existing Dokan store address for reference, but the pickup
+  address is deliberately a separate field, since a registered or
+  billing address is often not the counter a customer walks up to.
+- **Collection hours** — e.g. `Mon-Sat 8am-6pm, Sun closed`.
+
+Ticking the box without an address is refused, with an explanation —
+otherwise the vendor would see a saved setting that silently never
+appears at checkout, which looks like a bug.
+
+An admin can set the same three fields on a vendor's behalf from
+**Users > [vendor] > Store Pickup**.
+
+### When pickup is offered
+
+All of these must be true, or the customer only sees Delivery:
+
+1. Every item in the order comes from **one** vendor.
+2. That vendor has pickup switched on.
+3. That vendor has saved a collection address.
+
+This is re-checked when the customer presses **Place Order**, not just
+when the page renders — so a vendor switching pickup off mid-session, or
+a second vendor's product added in another tab, produces a clear error
+instead of an order nobody can fulfil.
+
+### What changes on a pickup order
+
+- No delivery address is requested at checkout.
+- **Pay on Delivery is hidden.** That gateway's whole flow is a rider
+  collecting M-Pesa at the customer's door, which doesn't exist for a
+  walk-in. Pickup customers pay normally at checkout (STK Push, Paybill,
+  card/bank).
+- The collection address and hours are frozen onto the order — so an
+  order placed today still shows the address it was placed against, even
+  if the vendor moves shop next month — and are shown on the thank-you
+  page, in **My Account > Orders**, in every order email, and on the
+  admin/vendor order screen.
+- An order note records that this is a collection, not a delivery.
+- The WhatsApp dispatch box is replaced by a pickup notice (Section 6).
+
+### Known gaps
+
+- The **SMS** templates in `class-sms-notifications.php` are unchanged,
+  so a pickup customer's confirmation SMS reads the same as a delivery
+  one. The collection address is in their email and on the order page.
+  Worth customising if SMS is your main channel.
+- There's no dedicated "Ready for collection" order status — vendors use
+  the existing statuses and mark the order complete once it's been
+  picked up. Adding a custom status would be the natural next step if
+  collection volume grows.
+- Pickup is all-or-nothing per order. A customer wanting to collect from
+  one vendor and have another vendor deliver has to place two orders.

@@ -39,6 +39,17 @@ class FMKE_Whatsapp_Dispatch {
 		);
 	}
 
+	/**
+	 * Guarded with class_exists rather than called directly, so this file
+	 * keeps working on its own if the store-pickup add-on is ever removed.
+	 *
+	 * @param WC_Order $order
+	 * @return bool
+	 */
+	private function is_pickup_order( $order ) {
+		return class_exists( 'FMKE_Store_Pickup' ) && FMKE_Store_Pickup::order_is_pickup( $order );
+	}
+
 	private function build_message( $order ) {
 		$items = array();
 		foreach ( $order->get_items() as $item ) {
@@ -72,6 +83,16 @@ class FMKE_Whatsapp_Dispatch {
 		if ( ! $order ) {
 			return;
 		}
+
+		// Store Pickup orders have no delivery leg - the customer is walking
+		// in to collect. Offering a rider hand-off here would be an easy way
+		// to accidentally dispatch a bouquet to a customer who is already on
+		// their way to the shop for it. See class-store-pickup.php.
+		if ( $this->is_pickup_order( $order ) ) {
+			echo '<p><strong>Store Pickup order.</strong> The customer is collecting this from the store in person, so there is nothing to dispatch.</p>';
+			return;
+		}
+
 		$rider_phone = $order->get_meta( '_fmke_rider_phone' );
 		$default_rider = get_option( 'fmke_default_rider_phone', '' );
 		$phone_value = $rider_phone ?: $default_rider;
@@ -108,6 +129,15 @@ class FMKE_Whatsapp_Dispatch {
 		if ( ! $order instanceof WC_Order ) {
 			return;
 		}
+
+		if ( $this->is_pickup_order( $order ) ) {
+			echo '<div class="dokan-order-history-panel">';
+			echo '<h3>Store Pickup</h3>';
+			echo '<p>This customer is collecting in person - no rider needed. Mark the order complete once they have picked it up.</p>';
+			echo '</div>';
+			return;
+		}
+
 		$rider_phone = $order->get_meta( '_fmke_rider_phone' );
 		$default_rider = get_option( 'fmke_default_rider_phone', '' );
 		$phone_value = $rider_phone ?: $default_rider;

@@ -168,6 +168,7 @@ function fmke_bootstrap() {
 	require_once FMKE_PATH . 'includes/class-service-badges.php';
 	require_once FMKE_PATH . 'includes/class-trust-badges.php';
 	require_once FMKE_PATH . 'includes/class-delivery-timeframe.php';
+	require_once FMKE_PATH . 'includes/class-store-pickup.php';
 	require_once FMKE_PATH . 'includes/class-flash-sales.php';
 	require_once FMKE_PATH . 'includes/class-best-sellers.php';
 	require_once FMKE_PATH . 'includes/class-trending-products.php';
@@ -202,6 +203,18 @@ function fmke_bootstrap() {
 
 	// Init WhatsApp dispatch (order meta box + admin settings).
 	new FMKE_Whatsapp_Dispatch();
+
+	// Delivery (flat KES 350) vs Store Pickup (collect from the vendor's
+	// own shop), plus the per-vendor pickup address settings those depend
+	// on. See class-store-pickup.php.
+	new FMKE_Store_Pickup();
+
+	// Place both shipping methods into the store's shipping zones on first
+	// run. Deliberately NOT in register_activation_hook: WC_Shipping_Zones
+	// isn't reliably loaded during the activation request, and a shipping
+	// method that isn't in a zone silently never appears at checkout - which
+	// looks exactly like a broken feature. Runs once, guarded by an option.
+	add_action( 'admin_init', array( 'FMKE_Store_Pickup', 'maybe_install_into_zones' ) );
 
 	// --- M-Pesa payment safety net: reconcile orders whose Daraja
 	// callback never arrived. Registered here (not in the gateway
