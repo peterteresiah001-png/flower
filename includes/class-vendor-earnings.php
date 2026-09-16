@@ -131,13 +131,29 @@ class FMKE_Vendor_Earnings {
 	}
 
 	/**
+	 * Whether this store has High-Performance Order Storage (HPOS)
+	 * active. Deliberately checked directly rather than assumed, so this
+	 * class reads the order date from wherever it's actually kept - not
+	 * from wherever it USED to be kept before the store enabled HPOS.
+	 */
+	private function orders_use_hpos() {
+		return class_exists( '\Automattic\WooCommerce\Utilities\OrderUtil' )
+			&& \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
+	}
+
+	/**
 	 * Fetches this vendor's orders for the period, newest first.
 	 *
-	 * Joins `posts` for the order date - `dokan_orders` doesn't store
-	 * one. HPOS note: on stores with High-Performance Order Storage
-	 * enabled the posts row still exists for synced orders, but if you
-	 * ever switch to HPOS-only (no posts table sync), swap the join to
-	 * {$wpdb->prefix}wc_orders.date_created_gmt.
+	 * `dokan_orders` itself doesn't store an order date, so this joins
+	 * whichever table actually holds it for this store's order-storage
+	 * mode: the HPOS orders table if HPOS is active, or the classic
+	 * `posts` table otherwise. This is deliberately NOT based on the
+	 * "keep the posts table in sync with HPOS" compatibility setting -
+	 * that setting can be switched off independently of HPOS itself, and
+	 * relying on it meant an admin flipping it off would silently make
+	 * every order vanish from this join (and from a vendor's earnings)
+	 * with no error anywhere. Reading straight from the authoritative
+	 * table for whichever mode is actually active works either way.
 	 *
 	 * @param int $days 0 for all time.
 	 * @return array Row objects: order_id, order_total, net_amount, order_status, order_date.
@@ -151,20 +167,29 @@ class FMKE_Vendor_Earnings {
 		$excluded     = self::EXCLUDED_STATUSES;
 		$placeholders = implode( ', ', array_fill( 0, count( $excluded ), '%s' ) );
 
-		$sql = "SELECT do.order_id, do.order_total, do.net_amount, do.order_status, p.post_date
+		if ( $this->orders_use_hpos() ) {
+			$orders_table = $wpdb->prefix . 'wc_orders';
+			$date_column  = 'o.date_created_gmt';
+			$join         = "INNER JOIN {$orders_table} AS o ON o.id = do.order_id";
+		} else {
+			$date_column = 'p.post_date';
+			$join        = "INNER JOIN {$wpdb->posts} AS p ON p.ID = do.order_id";
+		}
+
+		$sql = "SELECT do.order_id, do.order_total, do.net_amount, do.order_status, {$date_column} AS order_date
 			FROM {$table} AS do
-			INNER JOIN {$wpdb->posts} AS p ON p.ID = do.order_id
+			{$join}
 			WHERE do.seller_id = %d
 			AND do.order_status NOT IN ( {$placeholders} )";
 
 		$params = array_merge( array( $seller_id ), $excluded );
 
 		if ( $days > 0 ) {
-			$sql     .= ' AND p.post_date >= %s';
+			$sql     .= " AND {$date_column} >= %s";
 			$params[] = gmdate( 'Y-m-d H:i:s', strtotime( "-{$days} days", current_time( 'timestamp' ) ) );
 		}
 
-		$sql .= ' ORDER BY p.post_date DESC';
+		$sql .= " ORDER BY {$date_column} DESC";
 
 		return $wpdb->get_results( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL
 	}
@@ -341,7 +366,7 @@ class FMKE_Vendor_Earnings {
 				?>
 				<tr>
 					<td><a href="<?php echo esc_url( $url ); ?>">#<?php echo esc_html( $row->order_id ); ?></a></td>
-					<td><?php echo esc_html( date_i18n( wc_date_format(), strtotime( $row->post_date ) ) ); ?></td>
+					<td><?php echo esc_html( date_i18n( wc_date_format(), strtotime( $row->order_date ) ) ); ?></td>
 					<td><span class="fmke-earnings-status"><?php echo esc_html( $status ); ?></span></td>
 					<td class="fmke-num"><?php echo wp_kses_post( wc_price( $gross ) ); ?></td>
 					<td class="fmke-num fmke-earnings-commission"><?php echo wp_kses_post( wc_price( $commission ) ); ?></td>

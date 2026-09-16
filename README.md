@@ -11,8 +11,27 @@ uses default WordPress/WooCommerce/Dokan screens.
   product categories (Flowers, Gifts, Event Rentals), sets the 80/20
   commission default.
 - `includes/class-wc-gateway-mpesa-stk.php` — M-Pesa STK Push payment
-  gateway with two modes: **Demo Mode** (no credentials, simulates the
-  prompt) and **Daraja Sandbox** (real free Safaricom sandbox API).
+  gateway with three modes: **Demo Mode** (no credentials, simulates the
+  prompt), **Daraja Sandbox** (real free Safaricom sandbox API), and
+  **Daraja Production** (real payments — only sticks once the "Confirm
+  Production Use" checkbox in gateway settings is ticked in the same
+  save, so a fat-fingered dropdown change can't start taking real money
+  on untested credentials). Sandbox/Production payment safety:
+    - The Daraja callback URL carries a secret token, auto-generated on
+      first use and stored in the `fmke_mpesa_callback_secret` option, so
+      a forged POST to that URL (Daraja doesn't sign its callbacks) is
+      rejected rather than marking an order paid.
+    - The callback handler is idempotent — a duplicate or late callback
+      for an already-resolved order is acknowledged and ignored rather
+      than re-run.
+    - A WP-Cron job (`fmke_mpesa_reconcile`, every 5 minutes, scheduled
+      on activation) polls Daraja's status-query API for any order stuck
+      "on-hold" for 3+ minutes with no callback, so a dropped/late
+      callback doesn't leave an order (and the vendor's stock/earnings)
+      stuck indefinitely. The same check is also available per-order as
+      a "Check M-Pesa payment status now" action on the order edit
+      screen (WooCommerce > Orders > [order] > Order actions), for when
+      you don't want to wait for the next cron run.
 - `includes/class-wc-gateway-hosted-checkout.php` — IntaSend/Pesapal
   hosted checkout gateway, same two modes.
 - `includes/class-whatsapp-dispatch.php` — adds a "Dispatch via WhatsApp"
@@ -29,9 +48,14 @@ uses default WordPress/WooCommerce/Dokan screens.
   `dokan_orders` table — the commission is taken per order rather than
   recalculated at 20%, so historical orders and any vendor on a custom
   split still read correctly. Cancelled, refunded, failed and pending
-  orders are excluded. If the page 404s after activation, go to
-  **Settings > Permalinks** and click Save once to rebuild the dashboard
-  rewrite rules.
+  orders are excluded. Order dates are read from whichever order-storage
+  backend is actually active — WooCommerce's High-Performance Order
+  Storage (HPOS) table if HPOS is on, the classic `posts` table if not —
+  detected directly rather than assumed, so earnings stay accurate even
+  if a store later enables HPOS or turns off the "keep the posts table
+  in sync" compatibility setting. If the page 404s after activation, go
+  to **Settings > Permalinks** and click Save once to rebuild the
+  dashboard rewrite rules.
 - `includes/class-vendor-withdrawals.php` — a **Withdrawals** page on the
   Dokan vendor dashboard (`/dashboard/withdrawals/`) so vendors can cash
   out via M-Pesa or bank transfer. Shows the vendor's available balance
@@ -44,7 +68,14 @@ uses default WordPress/WooCommerce/Dokan screens.
   vendor on any status change. Minimum withdrawal is KES 500 (change the
   `MIN_WITHDRAWAL` constant in the class to adjust). Uses its own
   `{prefix}fmke_withdrawals` table rather than Dokan's built-in withdraw
-  screen, since it needs to store M-Pesa numbers / bank details.
+  screen, since it needs to store M-Pesa numbers / bank details. The
+  balance check and the insert are wrapped in a per-vendor MySQL named
+  lock, so a double-click, page refresh, or two open tabs can't both
+  slip past the balance check and jointly overdraw the vendor's real
+  balance. M-Pesa numbers are normalized/validated to a proper
+  2547XXXXXXXX / 2541XXXXXXXX format (07.../01... local format is also
+  accepted and converted) and bank details get basic sanity checks,
+  so a typo doesn't reach the admin's payout screen unflagged.
 - `includes/class-vendor-reviews.php` — **store-level vendor reviews**,
   separate from WooCommerce's per-product reviews. Adds a ratings/reviews
   block to each vendor's Dokan store page (average rating, review list,

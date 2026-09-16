@@ -20,6 +20,20 @@ define( 'FMKE_URL', plugin_dir_url( __FILE__ ) );
 // 'plugins_loaded' fires for this file on the very first activation request.
 require_once FMKE_PATH . 'includes/class-commission-setup.php';
 
+// Also registered unconditionally, same reasoning: register_activation_hook's
+// callback calls wp_schedule_event() with this custom interval, and that
+// happens in the SAME request that's activating this very plugin - meaning
+// 'plugins_loaded' (where fmke_bootstrap() normally runs) never fires for it
+// that request. If this filter lived inside fmke_bootstrap() instead, the
+// schedule wouldn't exist yet and wp_schedule_event() would silently fail.
+add_filter( 'cron_schedules', function ( $schedules ) {
+	$schedules['fmke_five_minutes'] = array(
+		'interval' => 5 * MINUTE_IN_SECONDS,
+		'display'  => 'Every 5 Minutes (Flower Marketplace KE M-Pesa reconciliation)',
+	);
+	return $schedules;
+} );
+
 /**
  * Creates the "My Wishlist" page (with the [fmke_wishlist] shortcode) if
  * one doesn't already exist. Defined directly in this always-loaded file
@@ -179,6 +193,56 @@ function fmke_bootstrap() {
 
 	// Init WhatsApp dispatch (order meta box + admin settings).
 	new FMKE_Whatsapp_Dispatch();
+
+	// --- M-Pesa payment safety net: reconcile orders whose Daraja
+	// callback never arrived. Registered here (not in the gateway
+	// class constructor) for the same reason as the demo-STK hooks
+	// above: WooCommerce only instantiates gateway objects lazily,
+	// which a wp-cron.php request or an order-edit screen action can't
+	// rely on. (The 'fmke_five_minutes' cron_schedules filter itself is
+	// registered unconditionally near the top of this file - see the
+	// comment there for why it can't live in here.) ---
+
+	add_action( 'fmke_mpesa_reconcile', 'fmke_run_mpesa_reconciliation' );
+
+	// Manual "check now" action for a single stuck order, from WP Admin > Orders > [order] > Order actions.
+	add_filter( 'woocommerce_order_actions', 'fmke_add_mpesa_check_status_action' );
+	add_action( 'woocommerce_order_action_fmke_check_mpesa_status', 'fmke_handle_mpesa_check_status_action' );
+}
+
+/**
+ * Cron callback: polls Daraja directly for any M-Pesa order that's been
+ * on-hold for a while with no callback, so a dropped/late Safaricom
+ * callback doesn't leave an order (and the vendor's earnings) stuck
+ * forever. See WC_Gateway_Mpesa_STK::reconcile_pending_payments().
+ */
+function fmke_run_mpesa_reconciliation() {
+	if ( ! class_exists( 'WC_Gateway_Mpesa_STK' ) ) {
+		return;
+	}
+	WC_Gateway_Mpesa_STK::reconcile_pending_payments();
+}
+
+/**
+ * Adds "Check M-Pesa payment status now" to the Order actions dropdown
+ * on an order's edit screen, but only for M-Pesa orders still on-hold -
+ * lets an admin resolve one stuck order immediately instead of waiting
+ * for the next 5-minute cron run.
+ */
+function fmke_add_mpesa_check_status_action( $actions ) {
+	global $theorder;
+	if ( $theorder && 'mpesa_stk' === $theorder->get_payment_method() && $theorder->has_status( 'on-hold' ) ) {
+		$actions['fmke_check_mpesa_status'] = 'Check M-Pesa payment status now';
+	}
+	return $actions;
+}
+
+function fmke_handle_mpesa_check_status_action( $order ) {
+	if ( ! class_exists( 'WC_Gateway_Mpesa_STK' ) ) {
+		return;
+	}
+	$gateway = new WC_Gateway_Mpesa_STK();
+	$gateway->query_and_apply_status( $order );
 }
 
 /**
@@ -220,4 +284,19 @@ register_activation_hook( __FILE__, function () {
 
 	// 5. Create the table that stores vendor (store-level) reviews.
 	fmke_create_vendor_reviews_table();
+
+	// 6. Schedule the M-Pesa payment reconciliation cron - a safety net
+	// for STK Push orders whose Daraja callback never arrives.
+	if ( ! wp_next_scheduled( 'fmke_mpesa_reconcile' ) ) {
+		wp_schedule_event( time(), 'fmke_five_minutes', 'fmke_mpesa_reconcile' );
+	}
+} );
+
+/**
+ * On deactivation: stop the M-Pesa reconciliation cron so it doesn't
+ * keep firing (and failing to find its dependencies) once the plugin
+ * providing WC_Gateway_Mpesa_STK is switched off.
+ */
+register_deactivation_hook( __FILE__, function () {
+	wp_clear_scheduled_hook( 'fmke_mpesa_reconcile' );
 } );

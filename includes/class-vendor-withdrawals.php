@@ -216,23 +216,20 @@ class FMKE_Vendor_Withdrawals {
 		}
 
 		if ( 'mpesa' === $method ) {
-			$phone   = isset( $_POST['fmke_mpesa_phone'] ) ? sanitize_text_field( wp_unslash( $_POST['fmke_mpesa_phone'] ) ) : '';
-			if ( '' === trim( $phone ) ) {
-				$this->redirect_with( $redirect, 'error', 'details' );
+			$phone_raw = isset( $_POST['fmke_mpesa_phone'] ) ? sanitize_text_field( wp_unslash( $_POST['fmke_mpesa_phone'] ) ) : '';
+			$phone     = $this->normalize_mpesa_phone( $phone_raw );
+			if ( ! $phone ) {
+				$this->redirect_with( $redirect, 'error', 'phone_format' );
 			}
 			$details = array( 'phone' => $phone );
 		} else {
 			$bank_name  = isset( $_POST['fmke_bank_name'] ) ? sanitize_text_field( wp_unslash( $_POST['fmke_bank_name'] ) ) : '';
 			$acc_name   = isset( $_POST['fmke_bank_account_name'] ) ? sanitize_text_field( wp_unslash( $_POST['fmke_bank_account_name'] ) ) : '';
 			$acc_number = isset( $_POST['fmke_bank_account_number'] ) ? sanitize_text_field( wp_unslash( $_POST['fmke_bank_account_number'] ) ) : '';
-			if ( '' === trim( $bank_name ) || '' === trim( $acc_name ) || '' === trim( $acc_number ) ) {
-				$this->redirect_with( $redirect, 'error', 'details' );
+			$details    = $this->validate_bank_details( $bank_name, $acc_name, $acc_number );
+			if ( ! $details ) {
+				$this->redirect_with( $redirect, 'error', 'bank_format' );
 			}
-			$details = array(
-				'bank_name'      => $bank_name,
-				'account_name'   => $acc_name,
-				'account_number' => $acc_number,
-			);
 		}
 
 		$note = isset( $_POST['fmke_note'] ) ? sanitize_textarea_field( wp_unslash( $_POST['fmke_note'] ) ) : '';
@@ -241,11 +238,24 @@ class FMKE_Vendor_Withdrawals {
 			$this->redirect_with( $redirect, 'error', 'minimum' );
 		}
 
+		// The balance check and the insert have to happen as one atomic
+		// step. Without this lock, two near-simultaneous requests (a
+		// double-click, a page refresh replaying the form, two open
+		// tabs) can both read the same "available balance" before either
+		// row exists, both pass the check, and together overdraw the
+		// vendor's real balance. A MySQL named lock scoped to this vendor
+		// serializes any concurrent submissions from them - a genuinely
+		// different vendor isn't blocked at all.
+		if ( ! $this->acquire_vendor_lock( $vendor_id ) ) {
+			$this->redirect_with( $redirect, 'error', 'busy' );
+		}
+
 		// Recompute server-side rather than trusting a hidden field, so a
 		// vendor can't request more than they actually have by editing
-		// the form.
+		// the form - and now guaranteed race-free by the lock above.
 		$available = $this->get_available_balance( $vendor_id );
 		if ( $amount > $available ) {
+			$this->release_vendor_lock( $vendor_id );
 			$this->redirect_with( $redirect, 'error', 'balance' );
 		}
 
@@ -264,6 +274,8 @@ class FMKE_Vendor_Withdrawals {
 			array( '%d', '%f', '%s', '%s', '%s', '%s', '%s' )
 		);
 
+		$this->release_vendor_lock( $vendor_id );
+
 		if ( ! $inserted ) {
 			$this->redirect_with( $redirect, 'error', 'db' );
 		}
@@ -276,6 +288,82 @@ class FMKE_Vendor_Withdrawals {
 		$this->notify_admin_new_request( $vendor_id, $amount, $method );
 
 		$this->redirect_with( $redirect, 'success', 'requested' );
+	}
+
+	/**
+	 * Serializes withdrawal requests from the SAME vendor so the balance
+	 * check in handle_request() can't race with itself (see the comment
+	 * there). Uses a MySQL session-level named lock rather than table
+	 * locking or a DB transaction, since it works the same regardless of
+	 * table storage engine and needs no schema change. Different vendors
+	 * never contend with each other - the lock name is per-vendor.
+	 * MySQL automatically releases the lock if the request dies (fatal
+	 * error, timeout) without calling release_vendor_lock(), since the
+	 * lock is tied to that one database connection.
+	 */
+	private function acquire_vendor_lock( $vendor_id ) {
+		global $wpdb;
+		$lock_name = 'fmke_withdrawal_' . (int) $vendor_id;
+		// Wait up to 5 seconds for a same-vendor request already in
+		// flight to finish, rather than failing immediately.
+		return '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 5)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL
+	}
+
+	private function release_vendor_lock( $vendor_id ) {
+		global $wpdb;
+		$lock_name = 'fmke_withdrawal_' . (int) $vendor_id;
+		$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL
+	}
+
+	/**
+	 * Accepts 07XXXXXXXX / 01XXXXXXXX (local) or 2547XXXXXXXX /
+	 * 2541XXXXXXXX (international, no leading +) and normalizes to the
+	 * 2547.../2541... form Daraja/manual disbursement expects. Returns
+	 * false for anything else, so a typo'd or garbage number gets caught
+	 * here instead of only being noticed by an admin about to send real
+	 * money to it.
+	 */
+	private function normalize_mpesa_phone( $phone ) {
+		$digits = preg_replace( '/[^0-9]/', '', (string) $phone );
+
+		if ( preg_match( '/^0[17]\d{8}$/', $digits ) ) {
+			$digits = '254' . substr( $digits, 1 );
+		}
+
+		if ( preg_match( '/^254[17]\d{8}$/', $digits ) ) {
+			return $digits;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Light sanity checks on bank payout details - not a full bank-
+	 * account validator (Kenyan banks vary), just enough to catch blank/
+	 * junk input before it reaches an admin who'll wire real money
+	 * against it. Returns the cleaned-up details array, or false.
+	 */
+	private function validate_bank_details( $bank_name, $acc_name, $acc_number ) {
+		$bank_name  = trim( $bank_name );
+		$acc_name   = trim( $acc_name );
+		$acc_digits = preg_replace( '/[^0-9]/', '', $acc_number );
+
+		if ( mb_strlen( $bank_name ) < 2 || mb_strlen( $bank_name ) > 100 ) {
+			return false;
+		}
+		if ( mb_strlen( $acc_name ) < 2 || mb_strlen( $acc_name ) > 100 ) {
+			return false;
+		}
+		// Kenyan bank account numbers are numeric and typically 6-20 digits.
+		if ( strlen( $acc_digits ) < 6 || strlen( $acc_digits ) > 20 ) {
+			return false;
+		}
+
+		return array(
+			'bank_name'      => $bank_name,
+			'account_name'   => $acc_name,
+			'account_number' => $acc_digits,
+		);
 	}
 
 	private function redirect_with( $base_url, $key, $value ) {
@@ -378,11 +466,14 @@ class FMKE_Vendor_Withdrawals {
 		}
 
 		$messages = array(
-			'method'  => 'Please choose a payout method.',
-			'details' => 'Please fill in the payment details for your chosen method.',
-			'minimum' => sprintf( 'The minimum withdrawal amount is %s.', wp_strip_all_tags( wc_price( self::MIN_WITHDRAWAL ) ) ),
-			'balance' => 'That amount is more than your available balance.',
-			'db'      => 'Something went wrong saving your request. Please try again.',
+			'method'       => 'Please choose a payout method.',
+			'details'      => 'Please fill in the payment details for your chosen method.',
+			'phone_format' => 'Please enter a valid Safaricom/Airtel M-Pesa number, e.g. 07XXXXXXXX or 2547XXXXXXXX.',
+			'bank_format'  => 'Please double-check your bank details - bank name and account name need at least 2 characters, and the account number should be 6-20 digits.',
+			'minimum'      => sprintf( 'The minimum withdrawal amount is %s.', wp_strip_all_tags( wc_price( self::MIN_WITHDRAWAL ) ) ),
+			'balance'      => 'That amount is more than your available balance.',
+			'busy'         => "We're still processing your last request - please wait a few seconds and try again.",
+			'db'           => 'Something went wrong saving your request. Please try again.',
 		);
 
 		if ( isset( $messages[ $error ] ) ) {

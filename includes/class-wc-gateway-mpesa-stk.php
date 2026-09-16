@@ -18,6 +18,28 @@ if ( ! defined( 'ABSPATH' ) ) {
  *    auto-confirms as "processing" after a few seconds) purely for demos,
  *    client walkthroughs, or UI testing when you don't have Daraja
  *    credentials handy yet.
+ *
+ * Payment-safety measures in the Sandbox/Live path:
+ *
+ * - The Safaricom callback URL carries a secret token (auto-generated,
+ *   stored in `fmke_mpesa_callback_secret`) so handle_callback() rejects
+ *   any POST that doesn't know it. Daraja doesn't sign its callbacks, so
+ *   this is what stops a stranger from guessing the URL and POSTing a
+ *   fake "payment successful" for an order they didn't pay for.
+ * - handle_callback() is idempotent: once an order is processing/
+ *   completed/failed/cancelled, a repeat or late callback is acknowledged
+ *   and ignored instead of re-running payment_complete()/update_status().
+ * - reconcile_pending_payments() (run every 5 minutes via WP-Cron, see
+ *   fmke_bootstrap() in the main plugin file) polls Daraja's status-query
+ *   API for any order that's been "on-hold" for a while with no callback,
+ *   so a dropped callback doesn't leave an order stuck forever. The same
+ *   check is also available as a manual "Check M-Pesa payment status now"
+ *   order action for a single stuck order.
+ * - Switching the Mode to "Daraja Production" only sticks if the admin
+ *   also ticks the production-confirmation checkbox in the same save;
+ *   otherwise it's silently reverted to Sandbox (see
+ *   process_admin_options()) so a fat-fingered dropdown can't start
+ *   taking real customer money with untested credentials.
  */
 class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 
@@ -46,6 +68,8 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 		$this->consumer_key    = $this->get_option( 'consumer_key' );
 		$this->consumer_secret = $this->get_option( 'consumer_secret' );
 
+		// Note: process_admin_options() is overridden below to enforce the
+		// production-confirmation checkbox before "Mode: Production" sticks.
 		add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );
 
 		// Callback URL Safaricom will POST to (Daraja sandbox mode only).
@@ -90,6 +114,13 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 				'default'     => 'demo',
 				'description' => 'Start in Demo Mode to test the flow, move to Daraja Sandbox for end-to-end testing, and only switch to Production once Safaricom has approved your Go-Live application and you are using your real Paybill/Till credentials.',
 			),
+			'live_confirm'    => array(
+				'title'       => 'Confirm Production Use',
+				'type'        => 'checkbox',
+				'label'       => 'I have Safaricom Go-Live approval and have double-checked the shortcode/passkey/consumer key & secret below are my PRODUCTION credentials, not sandbox ones.',
+				'default'     => 'no',
+				'description' => 'Required to actually switch Mode to "Daraja Production" and start taking real customer payments. If this is left unticked, saving with Mode set to Production will be reverted back to Sandbox automatically.',
+			),
 			'shortcode'       => array(
 				'title'       => 'Business Shortcode (Paybill/Till)',
 				'type'        => 'text',
@@ -108,6 +139,43 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 				'type'  => 'password',
 			),
 		);
+	}
+
+	/**
+	 * Saves settings as normal, but refuses to let "Mode: Production"
+	 * persist unless the "Confirm Production Use" checkbox was ticked in
+	 * the same save. Prevents an accidental dropdown change from taking
+	 * real customer money against untested/placeholder credentials.
+	 */
+	public function process_admin_options() {
+		$saved = parent::process_admin_options();
+
+		if ( 'live' === $this->get_option( 'environment' ) && 'yes' !== $this->get_option( 'live_confirm' ) ) {
+			$this->update_option( 'environment', 'sandbox' );
+			$this->environment = 'sandbox';
+
+			if ( class_exists( 'WC_Admin_Settings' ) ) {
+				WC_Admin_Settings::add_error( 'M-Pesa: Mode was reverted to "Daraja Sandbox" because "Confirm Production Use" wasn\'t ticked. Tick it and save again to actually go live.' );
+			}
+		}
+
+		return $saved;
+	}
+
+	/**
+	 * Secret token appended to the Daraja callback URL. Safaricom doesn't
+	 * sign its STK callbacks, so this is the only thing standing between
+	 * handle_callback() and anyone on the internet who finds/guesses the
+	 * URL and POSTs a fake "payment successful" result for an order.
+	 * Generated once and stored; rotates only if the option is deleted.
+	 */
+	private function get_callback_secret() {
+		$secret = get_option( 'fmke_mpesa_callback_secret' );
+		if ( ! $secret ) {
+			$secret = wp_generate_password( 32, false, false );
+			update_option( 'fmke_mpesa_callback_secret', $secret );
+		}
+		return $secret;
 	}
 
 	/**
@@ -260,11 +328,11 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 			'Password'          => $password,
 			'Timestamp'         => $timestamp,
 			'TransactionType'   => 'CustomerPayBillOnline',
-			'Amount'            => (int) $order->get_total(),
+			'Amount'            => (int) round( (float) $order->get_total() ),
 			'PartyA'            => $phone,
 			'PartyB'            => $this->shortcode,
 			'PhoneNumber'       => $phone,
-			'CallBackURL'       => WC()->api_request_url( 'WC_Gateway_Mpesa_STK' ),
+			'CallBackURL'       => add_query_arg( 'fmke_token', $this->get_callback_secret(), WC()->api_request_url( 'WC_Gateway_Mpesa_STK' ) ),
 			'AccountReference'  => 'Order' . $order->get_id(),
 			'TransactionDesc'   => 'Payment for order ' . $order->get_id(),
 		);
@@ -307,6 +375,17 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 	 * https://yourdomain.com/wc-api/wc_gateway_mpesa_stk
 	 */
 	public function handle_callback() {
+		// Reject anything that doesn't know the secret we put in the
+		// callback URL - Daraja doesn't sign its callbacks, so this is
+		// the only real check that the caller is actually Safaricom (or
+		// at least, someone who was handed our URL) rather than anyone
+		// on the internet POSTing a fake success result.
+		$token = isset( $_GET['fmke_token'] ) ? sanitize_text_field( wp_unslash( $_GET['fmke_token'] ) ) : '';
+		if ( ! hash_equals( $this->get_callback_secret(), $token ) ) {
+			status_header( 403 );
+			exit;
+		}
+
 		$raw  = file_get_contents( 'php://input' );
 		$data = json_decode( $raw, true );
 
@@ -332,6 +411,16 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 
 		$order = $orders[0];
 
+		// Idempotency: Safaricom can retry a callback, and the status-
+		// reconciliation cron can also land here for the same order. If
+		// it's already resolved, acknowledge and stop instead of running
+		// payment_complete()/update_status() a second time.
+		if ( $order->has_status( array( 'processing', 'completed', 'failed', 'cancelled' ) ) ) {
+			status_header( 200 );
+			echo wp_json_encode( array( 'ResultCode' => 0, 'ResultDesc' => 'Already processed' ) );
+			exit;
+		}
+
 		if ( 0 === (int) $result_code ) {
 			$receipt = '';
 			foreach ( $stk['CallbackMetadata']['Item'] ?? array() as $item ) {
@@ -348,5 +437,111 @@ class WC_Gateway_Mpesa_STK extends WC_Payment_Gateway {
 		status_header( 200 );
 		echo wp_json_encode( array( 'ResultCode' => 0, 'ResultDesc' => 'Accepted' ) );
 		exit;
+	}
+
+	/* ---------------- CALLBACK-MISSED SAFETY NET ---------------- */
+
+	/**
+	 * Cron entry point (hooked to 'fmke_mpesa_reconcile' every 5 minutes,
+	 * see fmke_bootstrap() in the main plugin file). Finds M-Pesa orders
+	 * that have been "on-hold" for a while with no callback yet, and
+	 * polls Daraja directly to find out what actually happened - so a
+	 * dropped/late callback (customer closed the app, a network blip,
+	 * Safaricom retry logic giving up, etc.) doesn't leave an order (and
+	 * the vendor's stock/earnings) stuck in limbo indefinitely.
+	 */
+	public static function reconcile_pending_payments() {
+		$gateway = new self();
+
+		if ( ! $gateway->shortcode || ! $gateway->passkey || ! $gateway->consumer_key || ! $gateway->consumer_secret ) {
+			return; // Not configured for Sandbox/Live - nothing to reconcile.
+		}
+
+		$orders = wc_get_orders( array(
+			'status'         => 'on-hold',
+			'payment_method' => 'mpesa_stk',
+			'limit'          => 50,
+			'meta_key'       => '_fmke_checkout_request_id',
+			'meta_compare'   => 'EXISTS',
+		) );
+
+		foreach ( $orders as $order ) {
+			$modified = $order->get_date_modified();
+			if ( ! $modified ) {
+				continue;
+			}
+			$age_minutes = ( time() - $modified->getTimestamp() ) / MINUTE_IN_SECONDS;
+
+			// Give the real callback a few minutes to arrive first so we
+			// don't race it, and stop bothering with STK pushes so old
+			// they've clearly gone stale either way (Daraja checkout
+			// requests themselves expire long before this).
+			if ( $age_minutes < 3 || $age_minutes > ( 24 * 60 ) ) {
+				continue;
+			}
+
+			$gateway->query_and_apply_status( $order );
+		}
+	}
+
+	/**
+	 * Looks up the real status of one order's STK push directly from
+	 * Daraja (the stkpushquery endpoint) and applies it, exactly like a
+	 * callback would have. Used by both the reconciliation cron above and
+	 * the manual "Check M-Pesa payment status now" order action.
+	 */
+	public function query_and_apply_status( $order ) {
+		if ( $order->has_status( array( 'processing', 'completed', 'failed', 'cancelled' ) ) ) {
+			return; // Already resolved, maybe the callback just landed.
+		}
+
+		$checkout_request_id = $order->get_meta( '_fmke_checkout_request_id' );
+		if ( ! $checkout_request_id ) {
+			return;
+		}
+
+		$token = $this->get_access_token();
+		if ( ! $token ) {
+			return; // Couldn't authenticate this run; the next run (or manual click) will retry.
+		}
+
+		$timestamp = date( 'YmdHis' );
+		$password  = base64_encode( $this->shortcode . $this->passkey . $timestamp );
+
+		$response = wp_remote_post( $this->api_base_url() . '/mpesa/stkpushquery/v1/query', array(
+			'headers' => array(
+				'Authorization' => 'Bearer ' . $token,
+				'Content-Type'  => 'application/json',
+			),
+			'body'    => wp_json_encode( array(
+				'BusinessShortCode' => $this->shortcode,
+				'Password'          => $password,
+				'Timestamp'         => $timestamp,
+				'CheckoutRequestID' => $checkout_request_id,
+			) ),
+			'timeout' => 20,
+		) );
+
+		if ( is_wp_error( $response ) ) {
+			$order->add_order_note( 'M-Pesa status check failed (network error): ' . $response->get_error_message() );
+			return;
+		}
+
+		$result = json_decode( wp_remote_retrieve_body( $response ), true );
+
+		// While Daraja is still waiting on the customer's PIN entry, this
+		// query returns an error body (no ResultCode) rather than a
+		// result - that just means "still pending", not "failed", so
+		// leave the order on-hold and let a later run check again.
+		if ( ! isset( $result['ResultCode'] ) ) {
+			return;
+		}
+
+		if ( 0 === (int) $result['ResultCode'] ) {
+			$order->payment_complete( $checkout_request_id );
+			$order->add_order_note( 'M-Pesa payment confirmed via status check (Daraja callback never arrived). CheckoutRequestID: ' . $checkout_request_id );
+		} else {
+			$order->update_status( 'failed', 'M-Pesa payment failed or was cancelled (confirmed via status check): ' . ( $result['ResultDesc'] ?? '' ) );
+		}
 	}
 }
